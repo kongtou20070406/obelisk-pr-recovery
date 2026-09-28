@@ -144,6 +144,7 @@ function defaultIndexerWorkerClient() {
   return {
     createWorkerBuildIndex: () => ({
       buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
+      readHermesMessageText: async () => null,
       stop() {},
     }),
   };
@@ -248,6 +249,7 @@ test('main process watches every root declared by the built-in provider registry
   const originalProfile = process.env.USERPROFILE;
   const originalAppData = process.env.APPDATA;
   const originalXdgConfig = process.env.XDG_CONFIG_HOME;
+  const originalHermesHome = process.env.HERMES_HOME;
   const home = makeTempDir(`obelisk-main-watch-dirs-${Date.now()}`);
   const claudeDir = join(home, '.claude');
   const codexDir = join(home, '.codex');
@@ -260,6 +262,7 @@ test('main process watches every root declared by the built-in provider registry
   process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
   process.env.APPDATA = join(home, 'AppData', 'Roaming');
   process.env.XDG_CONFIG_HOME = join(home, '.config');
+  process.env.HERMES_HOME = join(home, '.hermes');
   const [stableCopilotRoot, insidersCopilotRoot] = defaultCopilotUserDataRoots();
 
   const serviceOptions = [];
@@ -334,10 +337,15 @@ test('main process watches every root declared by the built-in provider registry
       { kind: 'file', path: join(insidersCopilotRoot, 'globalStorage', 'github.copilot-chat', 'session-store.db-wal') },
       { kind: 'tree', path: join(insidersCopilotRoot, 'workspaceStorage') },
       { kind: 'tree', path: join(home, '.dsh', 'sessions') },
+      { kind: 'file', path: join(home, '.hermes', 'state.db') },
+      { kind: 'file', path: join(home, '.hermes', 'state.db-wal') },
+      { kind: 'tree', path: join(home, '.hermes', 'profiles'), fileNames: ['state.db', 'state.db-wal'] },
       { kind: 'tree', path: join(home, '.kimi-code', 'sessions') },
       { kind: 'file', path: join(home, '.kimi-code', 'session_index.jsonl') },
       { kind: 'tree', path: join(home, '.omp', 'agent', 'sessions') },
       { kind: 'tree', path: join(home, '.pi', 'agent', 'sessions') },
+      { kind: 'file', path: join(home, '.zcode', 'cli', 'db', 'db.sqlite') },
+      { kind: 'file', path: join(home, '.zcode', 'cli', 'db', 'db.sqlite-wal') },
     ]);
     assert.equal(serviceOptions[0].watchTargets.some((t) => t.path === codexDir), false);
     await serviceOptions[0].buildIndex({ reason: 'settings-transfer' });
@@ -348,6 +356,7 @@ test('main process watches every root declared by the built-in provider registry
     restoreEnvVar('USERPROFILE', originalProfile);
     restoreEnvVar('APPDATA', originalAppData);
     restoreEnvVar('XDG_CONFIG_HOME', originalXdgConfig);
+    restoreEnvVar('HERMES_HOME', originalHermesHome);
     rmSync(home, { recursive: true, force: true });
   }
 });
@@ -548,6 +557,14 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
     assert.match(queries.at(-1).sql, /COALESCE\(source, 'claude'\) = \?/);
     assert.ok(queries.at(-1).params.includes('codex'));
 
+    // ADR-0007: a message's calls are persisted in the provider's order, so both reads have to
+    // ask for that order rather than leave it to the `(session_id, name)` index.
+    ipcHandlers.get('db:getSessionToolCalls')(null, 'pi:session');
+    assert.match(queries.at(-1).sql, /ORDER BY tc\.rowid/);
+
+    ipcHandlers.get('db:getSubagentToolCalls')(null, 'pi:visible-agent');
+    assert.match(queries.at(-1).sql, /ORDER BY tc\.rowid/);
+
     const settings = await ipcHandlers.get('settings:get')();
     assert.equal(settings.version, '9.8.7-test');
     assert.ok(
@@ -593,6 +610,22 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
   `).run('claude-undated-message', 'claude-session', 'assistant', 'assistant', 'ok', 7, 0, 'claude');
   setup.prepare('INSERT INTO sessions (id,source) VALUES (?,?)')
     .run('pi:session', 'pi');
+  setup.prepare('INSERT INTO sessions (id,source,jsonl_path) VALUES (?,?,?)')
+    .run('zcode:session', 'zcode', '/tmp/zcode/db/db.sqlite#z:session');
+  setup.prepare('INSERT INTO messages (uuid,session_id,type,role,text,source) VALUES (?,?,?,?,?,?)')
+    .run('zcode:full-text', 'zcode:session', 'assistant', 'assistant', 'truncated text', 'zcode');
+  setup.prepare('INSERT INTO sessions (id,source,jsonl_path) VALUES (?,?,?)')
+    .run('hermes:session', 'hermes', '/tmp/hermes/state.db#session:source');
+  setup.prepare('INSERT INTO messages (uuid,session_id,type,role,text,source) VALUES (?,?,?,?,?,?)')
+    .run('hermes:full-text', 'hermes:session', 'assistant', 'assistant', 'truncated Hermes text', 'hermes');
+  setup.prepare('INSERT INTO sessions (id,source) VALUES (?,?)')
+    .run('zcode:child', 'zcode');
+  setup.prepare('INSERT INTO messages (uuid,session_id,type,role,text,visibility,source,agent_id) VALUES (?,?,?,?,?,?,?,?)')
+    .run('zcode:child:message', 'zcode:child', 'assistant', 'assistant', 'child response', 'visible', 'zcode', 'zcode:child');
+  setup.prepare('INSERT INTO tool_calls (id,message_uuid,session_id,name,input_json) VALUES (?,?,?,?,?)')
+    .run('zcode:child:call', 'zcode:child:message', 'zcode:child', 'Read', '{}');
+  setup.prepare('INSERT INTO tool_results (tool_use_id,message_uuid,session_id,content) VALUES (?,?,?,?)')
+    .run('zcode:child:call', 'zcode:child:message', 'zcode:child', 'read result');
   setup.prepare(`
     INSERT INTO summaries (
       id, session_id, timestamp, source, content, visibility, input_tokens, output_tokens
@@ -683,7 +716,22 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
     [WATCHER_URL, { namedExports: noopWatcher() }],
     [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
     [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
-    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+    [INDEXER_WORKER_URL, { namedExports: {
+      createWorkerBuildIndex: () => ({
+        buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
+        readZcodeMessageText: async lookup => {
+          assert.equal(lookup.source, 'zcode');
+          assert.equal(lookup.messageUuid, 'zcode:full-text');
+          return 'complete ZCode text from worker';
+        },
+        readHermesMessageText: async lookup => {
+          assert.equal(lookup.source, 'hermes');
+          assert.equal(lookup.messageUuid, 'hermes:full-text');
+          return 'complete Hermes text from worker';
+        },
+        stop() {},
+      }),
+    } }],
   ]);
 
   try {
@@ -702,6 +750,12 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
       ipcHandlers.get('db:getSessionToolResults')(null, 'pi:session').map(row => row.tool_use_id),
       ['pi-visible-main-call'],
     );
+    assert.deepEqual(ipcHandlers.get('db:getSessionMessages')(null, 'zcode:child').map(row => row.uuid),
+      ['zcode:child:message'], 'first-class child detail includes its self-agent message');
+    assert.deepEqual(ipcHandlers.get('db:getSessionToolCalls')(null, 'zcode:child').map(row => row.id),
+      ['zcode:child:call']);
+    assert.deepEqual(ipcHandlers.get('db:getSessionToolResults')(null, 'zcode:child').map(row => row.tool_use_id),
+      ['zcode:child:call']);
     assert.deepEqual(ipcHandlers.get('db:getSubagentMessages')(null, 'pi:hidden-agent'), []);
     assert.deepEqual(ipcHandlers.get('db:getSubagentToolCalls')(null, 'pi:hidden-agent'), []);
     assert.deepEqual(ipcHandlers.get('db:getSubagentToolResults')(null, 'pi:hidden-agent'), []);
@@ -720,7 +774,11 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
     const patch = ipcHandlers.get('db:getSessionPatch')(null, 'pi:session', {});
     assert.equal(patch.changes.messages[0].tool_calls[0].result.content, 'main result');
     assert.equal(JSON.stringify(patch).includes('agent result'), false);
-    assert.equal(ipcHandlers.get('db:getMessageFullText')(null, 'pi-hidden-main'), null);
+    assert.equal(await ipcHandlers.get('db:getMessageFullText')(null, 'pi-hidden-main'), null);
+    assert.equal(await ipcHandlers.get('db:getMessageFullText')(null, 'zcode:full-text'),
+      'complete ZCode text from worker');
+    assert.equal(await ipcHandlers.get('db:getMessageFullText')(null, 'hermes:full-text'),
+      'complete Hermes text from worker');
 
     const claudeOnly = ipcHandlers.get('db:getUsageStats')(null, {});
     assert.equal(claudeOnly.totalTokens, 72);
@@ -733,6 +791,105 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
 
     const piOnly = ipcHandlers.get('db:getUsageStats')(null, { source: 'pi' });
     assert.equal(piOnly.totalTokens, 35);
+  } finally {
+    restore();
+    restoreEnvVar('HOME', originalHome);
+    restoreEnvVar('USERPROFILE', originalProfile);
+    await closeMainProcessDb(appHandlers);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ADR-0007 has to hold in the product and not only in the round-trip fixture: session detail reads
+// a message's calls back through these two queries, and `tool_calls` carries a `(session_id, name)`
+// index, so a read that leaves the order to the planner can return a message's calls sorted by
+// tool name instead of by the order the provider emitted them. On a store this small the planner
+// still picks the message index, so the explicit order those queries carry is pinned by the SQL
+// assertion in the Codex-rows test above; this one covers what the rows mean to the detail path.
+test('session IPC keeps a message tool calls in insertion order', async () => {
+  const originalHome = process.env.HOME;
+  const originalProfile = process.env.USERPROFILE;
+  const home = makeTempDir(`obelisk-main-call-order-${Date.now()}`);
+  const obeliskDir = join(home, '.obelisk');
+  mkdirSync(obeliskDir, { recursive: true });
+  process.env.HOME = home;
+  process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
+
+  const setup = new DatabaseSync(join(obeliskDir, 'obelisk.sqlite'));
+  setup.exec(readFileSync(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8'));
+  setup.prepare('INSERT INTO sessions (id,source) VALUES (?,?)').run('order:session', 'claude');
+  const insertMessage = setup.prepare(`
+    INSERT INTO messages (
+      uuid, session_id, type, role, text, timestamp, visibility, source, agent_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertCall = setup.prepare(`
+    INSERT INTO tool_calls (id, message_uuid, session_id, name, input_json)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  insertMessage.run('order-main', 'order:session', 'assistant', 'assistant', 'two calls', '2026-07-10T12:00:00Z', 'visible', 'claude', null);
+  insertMessage.run('order-agent', 'order:session', 'assistant', 'assistant', 'agent calls', '2026-07-10T12:01:00Z', 'visible', 'claude', 'order:agent');
+  // Both pairs are inserted in an order the `(session_id, name)` index would reverse.
+  insertCall.run('order-main-call-1', 'order-main', 'order:session', 'browser_snapshot', '{}');
+  insertCall.run('order-main-call-2', 'order-main', 'order:session', 'browser_console', '{}');
+  insertCall.run('order-agent-call-1', 'order-agent', 'order:session', 'write_file', '{}');
+  insertCall.run('order-agent-call-2', 'order-agent', 'order:session', 'read_file', '{}');
+  setup.close();
+
+  const ipcHandlers = new Map();
+  const appHandlers = new Map();
+
+  class FakeBrowserWindow {
+    constructor() {
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
+    }
+    loadFile() {}
+    on() {}
+    loadURL() {}
+    close() {}
+    static getAllWindows() { return []; }
+    static fromWebContents() { return null; }
+  }
+
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
+        app: captureAppHandlers(appHandlers),
+        BrowserWindow: FakeBrowserWindow,
+        ipcMain: {
+          handle(channel, handler) {
+            ipcHandlers.set(channel, handler);
+          },
+        },
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: SqliteCompatDatabase }],
+    [WATCHER_URL, { namedExports: noopWatcher() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
+
+  try {
+    await importMain();
+
+    assert.deepEqual(
+      ipcHandlers.get('db:getSessionToolCalls')(null, 'order:session').map(row => row.id),
+      ['order-main-call-1', 'order-main-call-2'],
+      'a session detail read keeps the calls of one message in source order',
+    );
+    assert.deepEqual(
+      ipcHandlers.get('db:getSubagentToolCalls')(null, 'order:agent').map(row => row.id),
+      ['order-agent-call-1', 'order-agent-call-2'],
+      'and so does a subagent detail read',
+    );
+    const patch = ipcHandlers.get('db:getSessionPatch')(null, 'order:session', {});
+    const message = patch.changes.messages.find(candidate => candidate.uuid === 'order-main');
+    assert.deepEqual(
+      message.tool_calls.map(toolCall => toolCall.name),
+      ['browser_snapshot', 'browser_console'],
+      'which is the order the assembled session detail carries',
+    );
   } finally {
     restore();
     restoreEnvVar('HOME', originalHome);

@@ -325,12 +325,20 @@ function buildIndex({
       const openCopilotChronicle = (sourcePath: string) => new (
         DatabaseImpl as new (path: string, options?: { readonly?: boolean; fileMustExist?: boolean }) => any
       )(sourcePath, { readonly: true, fileMustExist: true });
+      const openHermesStore = (sourcePath: string) => new (
+        DatabaseImpl as new (path: string, options?: { readonly?: boolean; fileMustExist?: boolean }) => any
+      )(sourcePath, { readonly: true, fileMustExist: true });
+      const openZcodeDatabase = (sourcePath: string) => new (
+        DatabaseImpl as new (path: string, options?: { readonly?: boolean; fileMustExist?: boolean; timeout?: number }) => any
+      )(sourcePath, { readonly: true, fileMustExist: true, timeout: 500 });
       const registry = providerRegistry
         ?? (providerSettings === undefined
-          ? createBuiltinProviderRegistry(roots, { openCopilotChronicle })
+          ? createBuiltinProviderRegistry(roots, { openCopilotChronicle, openHermesStore, openZcodeDatabase })
           : createConfiguredBuiltinProviderRuntime(providerSettings, {
             baseRoots: roots,
             openCopilotChronicle,
+            openHermesStore,
+            openZcodeDatabase,
           }).registry);
       const providerPlan = createProviderIndexPlan(db, registry, {
         force,
