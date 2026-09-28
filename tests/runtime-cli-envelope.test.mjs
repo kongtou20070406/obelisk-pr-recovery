@@ -130,3 +130,17 @@ test('--search tolerates FTS-special input via safe tokenization', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.ok(Array.isArray(JSON.parse(result.stdout)), 'search must return a JSON array');
 });
+
+test('--search accepts bounded compact-result and exact-scope options', () => {
+  const home = tempHome();
+  const result = runRuntime([
+    '--search', 'needle', '--limit', '10', '--project-path', '/tmp/example',
+    '--snippet-tokens', '12', '--context-limit', '0',
+  ], { home });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.ok(Array.isArray(JSON.parse(result.stdout)));
+
+  const invalid = runRuntime(['--search', 'needle', '--context-limit', '7'], { home });
+  assert.equal(invalid.status, 1);
+  assert.match(JSON.parse(invalid.stdout).error, /contextLimit/u);
+});
