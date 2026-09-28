@@ -69,9 +69,11 @@ test('built-in provider registry exposes every source without caller-side branch
     codex: '/sources/codex',
     copilot: '/sources/copilot',
     deepseek: '/sources/deepseek',
+    hermes: '/sources/hermes',
     kimi: '/sources/kimi',
     omp: '/sources/omp',
     pi: '/sources/pi',
+    zcode: '/sources/zcode',
   });
 
   assert.deepEqual(registry.catalog().map(({ id, name }) => ({ id, name })), [
@@ -79,9 +81,11 @@ test('built-in provider registry exposes every source without caller-side branch
     { id: 'codex', name: 'Codex' },
     { id: 'copilot', name: 'GitHub Copilot' },
     { id: 'deepseek', name: 'DeepSeek Harness' },
+    { id: 'hermes', name: 'Hermes Agent' },
     { id: 'kimi', name: 'Kimi Code' },
     { id: 'omp', name: 'OMP' },
     { id: 'pi', name: 'Pi' },
+    { id: 'zcode', name: 'ZCode' },
   ]);
   assert.deepEqual(registry.watchTargets(), [
     { kind: 'tree', path: join('/sources/claude', 'projects') },
@@ -93,9 +97,14 @@ test('built-in provider registry exposes every source without caller-side branch
     { kind: 'file', path: join('/sources/copilot', 'globalStorage', 'github.copilot-chat', 'session-store.db-wal') },
     { kind: 'tree', path: join('/sources/copilot', 'workspaceStorage') },
     { kind: 'tree', path: '/sources/deepseek' },
+    { kind: 'file', path: join('/sources/hermes', 'state.db') },
+    { kind: 'file', path: join('/sources/hermes', 'state.db-wal') },
+    { kind: 'tree', path: join('/sources/hermes', 'profiles'), fileNames: ['state.db', 'state.db-wal'] },
     { kind: 'tree', path: join('/sources/kimi', 'sessions') },
     { kind: 'file', path: join('/sources/kimi', 'session_index.jsonl') },
     { kind: 'tree', path: join('/sources/omp') },
     { kind: 'tree', path: join('/sources/pi') },
+    { kind: 'file', path: join('/sources/zcode', 'db', 'db.sqlite') },
+    { kind: 'file', path: join('/sources/zcode', 'db', 'db.sqlite-wal') },
   ]);
 });
