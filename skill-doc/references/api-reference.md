@@ -137,6 +137,10 @@ session ID. When `snippetTokens` is set, `message.text` is a matched excerpt and
 returned. Expand selected UUIDs with `context(uuid)` or `raw(uuid)`; do not treat
 the excerpt as complete evidence. The CLI exposes the same controls as
 `--project-path`, `--limit`, `--snippet-tokens`, and `--context-limit`.
+The first argument after `--search` is search text, even when it begins with
+`--`; options follow that argument. A standalone `--` ends option parsing and
+treats everything after it as text: `obelisk --search -- --limit` searches for
+the literal flag name, and `obelisk --search needle -- --help` searches both terms.
 
 Valid FTS5 syntax in `text` is honored. Input that FTS5 would reject as
 malformed (for example a hyphenated term like `foo-bar`) does not error: it

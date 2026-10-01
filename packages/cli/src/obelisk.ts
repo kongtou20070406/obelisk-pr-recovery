@@ -75,7 +75,13 @@ async function main() {
       const rest = args.slice(1);
       for (let i = 0; i < rest.length; i++) {
         const arg = rest[i];
-        if (arg === '--nonce' || valueFlags[arg]) {
+        if (arg === '--') {
+          textParts.push(...rest.slice(i + 1));
+          break;
+        }
+        // Preserve the positional text argument, even when it names a flag.
+        if (i === 0) { textParts.push(arg); continue; }
+        if (arg === '--nonce' || Object.hasOwn(valueFlags, arg)) {
           const value = rest[++i];
           if (!value) throw new Error(`${arg} requires a value`);
           if (arg === '--nonce') nonce = value;
@@ -131,7 +137,7 @@ async function main() {
     }
     return;
   }
-  process.stderr.write('Usage:\n  obelisk install [skills options]\n  obelisk --build\n  obelisk --search "text" [--limit N] [--project-path PATH] [--session-id ID] [--snippet-tokens N] [--context-limit 0..6] [--after ISO] [--before ISO] [--source ID] [--nonce TOKEN]\n  obelisk --query <file.js>\n  obelisk --attune <file.js>\n');
+  process.stderr.write('Usage:\n  obelisk install [skills options]\n  obelisk --build\n  obelisk --search "text" [--limit N] [--project-path PATH] [--session-id ID] [--snippet-tokens N] [--context-limit 0..6] [--after ISO] [--before ISO] [--source ID] [--nonce TOKEN] [-- literal text...]\n  obelisk --query <file.js>\n  obelisk --attune <file.js>\n');
   process.exitCode = 1;
 }
 
